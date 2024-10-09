@@ -38,48 +38,9 @@ def print_pretty_tree(node: tree_sitter.Node, depth=0):
         print_pretty_tree(child, depth=depth + 1)
 
 
-def query_global_varibale_declarations(node: tree_sitter.Node):
-    query = LANG_C.query(
-        """
-        (translation_unit
-            (declaration)@declaration)
-        """
-    )
-    matches = query.matches(node)
-    return [m[1]["declaration"][0] for m in matches]
-
-
-def query_variable_name(node: tree_sitter.Node):
-    query = LANG_C.query(
-        """
-        (identifier)@identifier
-        """
-    )
-    matches = query.matches(node)
-    if len(matches) == 0:
-        print("identifier not found in node")
-        return None
-    return matches[0][1]["identifier"][0].text
-
-
-def query_named_struct_specifiers(node: tree_sitter.Node):
-    query = LANG_C.query(
-        """
-        (struct_specifier
-            (type_identifier)@identifier
-            (field_declaration_list)@declaration_list
-        )@specifier
-        """
-    )
-    matches = query.matches(node)
-    return [
-        {
-            "specifier": m[1]["specifier"][0],
-            "identifier": m[1]["identifier"][0],
-            "declaration_list": m[1]["declaration_list"][0],
-        }
-        for m in matches
-    ]
+def query_match(node: tree_sitter.Node, query: str):
+    q = LANG_C.query(query)
+    return q.matches(node)
 
 
 def read_files(paths: list[str]):
@@ -94,34 +55,126 @@ def merge_files_content(content_list: list[bytes]):
     return b"\n".join(content_list)
 
 
-struct_specs: list[dict[str, tree_sitter.Node]] = []
+def str_and_bytes(s_or_b: str | bytes):
+    if isinstance(s_or_b, str):
+        return s_or_b, s_or_b.encode()
+    else:
+        return s_or_b.decode(), s_or_b
 
 
-def find_struct_by_name(name: str | bytes):
-    if isinstance(name, str):
-        name = name.encode()
-    for spec in struct_specs:
-        if spec["identifier"].text == name:
-            return spec
-    return None
+def _query_underlying_type_typedef(node: tree_sitter.Node, id_s: str):
+    matches = query_match(
+        node,
+        f"""
+        (type_definition
+            (type_identifier)@identifier (#eq? @identifier "{id_s}")
+        )@definition
+        """,
+    )
+    if len(matches):
+        definition = matches[0][1]["definition"][0]
+        type_ = definition.child_by_field_name("type")
+        if type_.type == "struct_specifier":
+            struct_body = type_.child_by_field_name("body")
+            if struct_body is None:
+                struct_name = type_.child_by_field_name("name").text
+                return query_underlying_type(node, struct_name)
+            else:
+                return "struct", type_
+        elif type_.type == "enum_specifier":
+            print("enum_specifier not supported")
+            return None, None
+        elif type_.type == "union_specifier":
+            print("union_specifier not supported")
+            return None, None
+        else:
+            # print("unknown type")
+            return type_.text.decode(), None
+    return None, None
 
 
-def struct2dict(spec: dict[str, tree_sitter.Node]):
+def _query_underlying_type_struct(node: tree_sitter.Node, id_s: str):
+    matches = query_match(
+        node,
+        f"""
+        (struct_specifier
+            (type_identifier)@identifier (#eq? @identifier "{id_s}")
+            (field_declaration_list)@list
+        )@specifier
+        """,
+    )
+    if len(matches):
+        return "struct", matches[0][1]["specifier"][0]
+    return None, None
+
+
+def query_underlying_type(node: tree_sitter.Node, identifier: str | bytes):
+    id_s, id_b = str_and_bytes(identifier)
+
+    parts = id_s.split()
+    if len(parts) == 1:
+        id_ = parts[0]
+        for func in [
+            _query_underlying_type_typedef,
+            _query_underlying_type_struct,
+        ]:
+            u, d = func(node, id_)
+            if u is not None:
+                return u, d
+    elif len(parts) == 2:
+        spec, id_ = parts
+        func = {"struct": _query_underlying_type_struct}.get(spec, None)
+        if func is None:
+            print("unknown specifier", spec)
+        else:
+            u, d = func(node, id_)
+            if u is not None:
+                return u, d
+    else:
+        print("cannot parse identifier:", id_s)
+
+    # print("query_underlying_type failed:", id_s)
+    return id_s, None
+
+
+def struct_specifier2dict(root: tree_sitter.Node, struct_specifier: tree_sitter.Node):
+    body = struct_specifier.child_by_field_name("body")
+    if body is None:
+        name = struct_specifier.child_by_field_name("name")
+        under, detail = query_underlying_type(root, name.text)
+        if under == "struct":
+            return struct_specifier2dict(root, detail)
+        else:
+            return {}
     res = {}
-    for child in spec["declaration_list"].named_children:
+    for child in body.named_children:
         if child.type != "field_declaration":
             continue
         field_declaration = child
-        field_type = field_declaration.named_children[0]
-        place_holder = ""
+        field_type = field_declaration.child_by_field_name("type")
+        place_holder = field_type.text.decode()
         if field_type.type == "struct_specifier":
-            struct_name = field_type.named_children[0].text
-            place_holder = struct2dict(find_struct_by_name(struct_name))
+            place_holder = struct_specifier2dict(root, field_type)
         for child2 in field_declaration.named_children[1:]:
-            if child2.type != "field_identifier":
+            if child2.type not in [  # _field_declarator
+                "array_declarator",
+                "attributed_declarator",
+                "field_identifier",
+                "function_declarator",
+                "parenthesized_declarator",
+                "pointer_declarator",
+            ]:
                 continue
             res[child2.text.decode()] = place_holder
     return res
+
+
+def struct2dict(root: tree_sitter.Node, identifier: str):
+    under, detail = query_underlying_type(root, identifier)
+    if under != "struct":
+        print("identifier is", under)
+        return {}
+    return struct_specifier2dict(root, detail)
 
 
 def main(inputs: list[str], output_type: str, identifier: str | None = None):
@@ -132,18 +185,12 @@ def main(inputs: list[str], output_type: str, identifier: str | None = None):
         print_pretty_tree(root)
         return 0
 
-    # global struct_specs, sturct_names
-    # gvars = query_global_varibale_declarations(root)
-    # var_names = [query_variable_name(gv) for gv in gvars]
-    # struct_specs = query_named_struct_specifiers(root)
-
-    # st = find_struct_by_name(target_struct)
-    # if st is None:
-    #     print("Target struct not exists")
-    #     return -1
-
-    # d = struct2dict(st)
-    # print(yaml_dumps(d), end="")
+    if output_type == "yaml":
+        if identifier is None:
+            print("identifier cannot be None")
+            return -1
+        d = struct2dict(root, identifier)
+        print(yaml_dumps(d), end="")
 
 
 def parse_arguments():
