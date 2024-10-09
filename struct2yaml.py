@@ -19,14 +19,22 @@ parser = tree_sitter.Parser(LANG_C)
 
 
 def print_pretty_tree(node: tree_sitter.Node, depth=0):
-    tabs = "\t" * depth
-    line = f"{tabs}type: {node.type}"
-    if node.child_count == 0:
-        line += f", text: {node.text}"
-    if node.is_named:
-        print(line)
+    indents = "    " * depth
 
-    for child in node.children:
+    line = f"{indents}<{node.type}"
+    if node.child_count == 0:
+        line += f" text={node.text}"
+    line += ">"
+    print(line)
+
+    for idx, child in enumerate(node.children):
+        if not child.is_named:
+            continue
+
+        field_name = node.field_name_for_child(idx)
+        if field_name is not None:
+            print(f"{indents}  {field_name}:")
+
         print_pretty_tree(child, depth=depth + 1)
 
 
