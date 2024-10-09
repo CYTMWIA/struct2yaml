@@ -1,3 +1,5 @@
+import argparse
+
 import tree_sitter
 import tree_sitter_c
 from yaml import dump
@@ -114,26 +116,60 @@ def struct2dict(spec: dict[str, tree_sitter.Node]):
     return res
 
 
-def main(src_paths: list[str], target_struct: str):
-    code = merge_files_content(read_files(src_paths))
+def main(inputs: list[str], output_type: str, identifier: str | None = None):
+    code = merge_files_content(read_files(inputs))
     tree = parser.parse(code)
     root = tree.root_node
-    # print_pretty_tree(root)
+    if output_type == "ast":
+        print_pretty_tree(root)
+        return 0
 
-    global struct_specs, sturct_names
+    # global struct_specs, sturct_names
     # gvars = query_global_varibale_declarations(root)
     # var_names = [query_variable_name(gv) for gv in gvars]
-    struct_specs = query_named_struct_specifiers(root)
+    # struct_specs = query_named_struct_specifiers(root)
 
-    st = find_struct_by_name(target_struct)
-    if st is None:
-        print("Target struct not exists")
-        return -1
+    # st = find_struct_by_name(target_struct)
+    # if st is None:
+    #     print("Target struct not exists")
+    #     return -1
 
-    d = struct2dict(st)
-    print(yaml_dumps(d), end="")
+    # d = struct2dict(st)
+    # print(yaml_dumps(d), end="")
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Convert struct to yaml or something else."
+    )
+
+    parser.add_argument(
+        "-i",
+        "--input",
+        type=str,
+        nargs="+",
+        required=True,
+        help="input source files",
+    )
+
+    parser.add_argument("--identifier", type=str, default=None, help="identifier name")
+
+    parser.add_argument(
+        "--output_type",
+        type=str,
+        required=True,
+        choices=["ast", "yaml"],
+        help="output type",
+    )
+
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    ret = main(["examples/1.c", "examples/2.c"], "st_members_2")
+    args = parse_arguments()
+    ret = main(
+        inputs=args.input,
+        output_type=args.output_type,
+        identifier=args.identifier,
+    )
     exit(ret)
