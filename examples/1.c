@@ -1,34 +1,48 @@
 #include <stdio.h>
 
-struct struct_a {
-    int a;
-};
-struct struct_a obj_a = {
-    .a = 1,
+struct SingleMember {
+    int value;
 };
 
-struct struct_b {
-    int b;
-} obj_b = {
-    .b = 114514,
+struct MultiMember {
+    int a;
+    float b;
+    char c, d;
 };
 
 struct {
-    int c;
-} obj_c = {
-    .c = 12,
+    int x;
+    float y;
+} anonymous_struct;
+
+struct NestedStruct {
+    int outer;
+    struct SingleMember nested;
 };
 
-struct st_members {
-    int a;
-    int b;
-    int c;
+struct NestedAnonymousStruct {
+    int outer;
+    struct {
+        int inner;
+    } nested;
 };
 
-struct st_members_2 {
-    int a;
-    int b, c;
-    int d;
+typedef struct {
+    int id;
+    char name[20];
+} TypedefStruct;
+
+struct IncompleteInitialization {
+    int p;
+    float q;
+    char r;
+} incompleteInit = {10};
+
+struct Outer {
+    int outerValue;
+    struct {
+        int innerValue;
+    } anonymousInner;
 };
 
 int main()
