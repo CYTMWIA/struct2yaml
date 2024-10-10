@@ -82,8 +82,8 @@ def _query_underlying_type_typedef(node: tree_sitter.Node, id_s: str):
             else:
                 return "struct", type_
         elif type_.type == "enum_specifier":
-            print("enum_specifier not supported")
-            return None, None
+            # print("enum_specifier not supported")
+            return "enum", None
         elif type_.type == "union_specifier":
             print("union_specifier not supported")
             return None, None
@@ -169,12 +169,148 @@ def struct_specifier2dict(root: tree_sitter.Node, struct_specifier: tree_sitter.
     return res
 
 
+def struct_specifier_body2yaml_cpp(
+    root: tree_sitter.Node,
+    body: tree_sitter.Node,
+):
+    encode = []
+    decode = []
+    for field_declaration in body.named_children:
+        if field_declaration.type != "field_declaration":
+            continue
+
+        type_node = field_declaration.child_by_field_name("type")
+        data_type = type_node.text.decode()
+        if type_node.type == "struct_specifier":
+            named = type_node.child_by_field_name("name") is not None
+            if named:
+                struct_specifier2yaml_cpp(root, type_node)
+            else:
+                print(f"Anonymous struct is not supported: {data_type}")
+                # struct_specifier_body2yaml_cpp(root, )
+                continue
+        elif (
+            type_node.type == "enum_specifier"
+            or query_underlying_type(root, data_type)[0] == "enum"
+        ):
+            data_type = "int"
+        elif type_node.type == "union_specifier":
+            print(f"Union is not supported: {data_type}")
+            continue
+
+        for field_node in field_declaration.named_children[1:]:
+            if field_node.type == "array_declarator":
+                declarator = field_node.child_by_field_name("declarator")
+                field_name = declarator.text.decode()
+                size_node = field_node.child_by_field_name("size")
+                size_s = size_node.text.decode()
+                node_var = f'node["{field_name}"]'
+                encode += [
+                    f"for (i=0; i<({size_s}); i++) {node_var}.push_back(rhs.{field_name}[i]);",
+                ]
+                decode += [
+                    f"if ({node_var})",
+                    "{",
+                    f"    auto vec = {node_var}.as<std::vector<{data_type}>>();",
+                    f"    int asize = {size_s};",
+                    "    int csize = std::min(asize, vec.size());",
+                    f"    for (i=0; i<csize; i++) rhs.{field_name}[i] = vec[i];",
+                    "}",
+                ]
+            elif field_node.type == "pointer_declarator":
+                declarator = field_node.child_by_field_name("declarator")
+                field_name = declarator.text.decode()
+                node_var = f'node["{field_name}"]'
+                encode += [
+                    f"if (rhs.{field_name}) {node_var} = *(rhs.{field_name});",
+                ]
+                decode += [
+                    f"if ({node_var})",
+                    "{",
+                    f"    rhs.{field_name} = ({data_type}*)malloc(sizeof({data_type}));",
+                    f"    *(rhs.{field_name}) = {node_var}.as<{data_type}>();",
+                    "}",
+                ]
+            elif field_node.type == "function_declarator":
+                print("field type is function_declarator, which is not supported")
+                continue
+            elif field_node.type in [
+                "attributed_declarator",
+                "field_identifier",
+                "parenthesized_declarator",
+                "pointer_declarator",
+            ]:
+                field_name = field_node.text.decode()
+                node_var = f'node["{field_name}"]'
+                encode += [f"{node_var} = rhs.{field_name};"]
+                decode += [
+                    f"if ({node_var}) rhs.{field_name} = {node_var}.as<{data_type}>();"
+                ]
+    return encode, decode
+
+
+def struct_specifier2yaml_cpp(
+    root: tree_sitter.Node,
+    struct_specifier: tree_sitter.Node,
+    name: str | None = None,  # useful for typedef struct
+):
+    if name is None:
+        name_node = struct_specifier.child_by_field_name("name")
+        if name_node is None:
+            print("Anonymous struct is not allowed")
+            return None
+        name = name_node.text.decode()
+
+    body_node = struct_specifier.child_by_field_name("body")
+    if body_node is None:
+        under, detail = query_underlying_type(root, name)
+        if under == "struct":
+            return struct_specifier2yaml_cpp(root, detail)
+        else:
+            return None
+
+    res = struct_specifier_body2yaml_cpp(root, body_node)
+    if res is None:
+        print("Convert to yaml-cpp failed")
+        return None
+    encode, decode = res
+
+    # composite
+    res = [
+        "template<>",
+        f"struct convert<{name}>",
+        "{",
+        f"  static Node encode(const {name}& rhs)",
+        "  {",
+        "    Node node;",
+        "\n".join(["    " + line for line in encode]),
+        "    return node;",
+        "  }",
+        f"  static bool decode(const Node& node, {name}& rhs)",
+        "  {",
+        "\n".join(["    " + line for line in decode]),
+        "    return true;",
+        "  }",
+        "};",
+    ]
+    print("\n".join(res))
+    return None
+
+
 def struct2dict(root: tree_sitter.Node, identifier: str):
     under, detail = query_underlying_type(root, identifier)
     if under != "struct":
         print("identifier is", under)
         return {}
     return struct_specifier2dict(root, detail)
+
+
+def struct2yaml_cpp(root: tree_sitter.Node, identifier: str):
+    under, detail = query_underlying_type(root, identifier)
+    if under != "struct":
+        print("identifier is", under)
+        return {}
+    return struct_specifier2yaml_cpp(root, detail, identifier)
 
 
 def main(inputs: list[str], output_type: str, identifier: str | None = None):
@@ -191,6 +327,14 @@ def main(inputs: list[str], output_type: str, identifier: str | None = None):
             return -1
         d = struct2dict(root, identifier)
         print(yaml_dumps(d), end="")
+        return 0
+
+    if output_type == "yaml-cpp":
+        if identifier is None:
+            print("identifier cannot be None")
+            return -1
+        struct2yaml_cpp(root, identifier)
+        # print(code)
 
 
 def parse_arguments():
@@ -213,7 +357,7 @@ def parse_arguments():
         "--output_type",
         type=str,
         required=True,
-        choices=["ast", "yaml"],
+        choices=["ast", "yaml", "yaml-cpp"],
         help="output type",
     )
 
